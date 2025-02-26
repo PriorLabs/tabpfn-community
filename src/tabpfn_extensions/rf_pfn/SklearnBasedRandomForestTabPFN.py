@@ -13,6 +13,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.ensemble._base import _partition_estimators
 from sklearn.utils.validation import (
     check_is_fitted,
+    check_array,
 )
 
 from .SklearnBasedDecisionTreeTabPFN import (
@@ -44,13 +45,6 @@ class RandomForestTabPFNBase:
     def get_n_estimators(self, X):
         return self.n_estimators
 
-    def set_categorical_features(self, categorical_features):
-        """Sets categorical features
-        :param categorical_features: Categorical features
-        :return: None.
-        """
-        self.categorical_features = categorical_features
-
     def fit(self, X, y, sample_weight=None):
         """Fits RandomForestTabPFN
         :param X: Feature training data
@@ -58,10 +52,18 @@ class RandomForestTabPFNBase:
         :param sample_weight: Weights of each sample
         :return: None.
         """
+        # Add explicit sparse matrix check
+        X = check_array(X, accept_sparse=False, force_all_finite=False)
+
+        if sample_weight is not None:
+            logger.warning(
+                "sample_weight is only used for the random forest part of the model, "
+                "not for TabPFN. This might lead to unexpected behavior."
+            )
+
         self.estimator = self.init_base_estimator()
         self.estimator.set_categorical_features(self.categorical_features)
 
-        self.X = X
         self.n_estimators = self.get_n_estimators(X)
 
         time.time()
@@ -73,7 +75,7 @@ class RandomForestTabPFNBase:
                     X = X.numpy()
                 if torch.is_tensor(y):
                     y = y.numpy()
-                super().fit(X, y)
+                super().fit(X, y, sample_weight=sample_weight)
             except TypeError as e:
                 print("Error in fit with data", X, y)
                 raise e
@@ -152,6 +154,12 @@ class RandomForestTabPFNClassifier(RandomForestTabPFNBase, RandomForestClassifie
             max_samples=max_samples,
         )
 
+        if class_weight is not None:
+            logger.warning(
+                "class_weight is only used for the random forest part of the model, "
+                "not for TabPFN. This might lead to unexpected behavior."
+            )
+
         self.tabpfn = tabpfn
 
         self.categorical_features = categorical_features
@@ -177,6 +185,7 @@ class RandomForestTabPFNClassifier(RandomForestTabPFNBase, RandomForestClassifie
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
         tags.input_tags.allow_nan = True
+        tags.input_tags.sparse = False
         tags.estimator_type = "classifier"
         return tags
 
@@ -314,6 +323,7 @@ class RandomForestTabPFNRegressor(RandomForestTabPFNBase, RandomForestRegressor)
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
         tags.input_tags.allow_nan = True
+        tags.input_tags.sparse = False
         tags.estimator_type = "regressor"
         return tags
 

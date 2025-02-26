@@ -12,6 +12,7 @@ from sklearn.base import ClassifierMixin, RegressorMixin
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.tree import BaseDecisionTree, DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.utils.validation import check_is_fitted
 
 from tabpfn_extensions import TabPFNRegressor, TabPFNClassifier
 
@@ -44,7 +45,7 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
         verbose=False,
         show_progress=False,
         fit_nodes=True,
-        tree_seed=0,
+        tree_seed=None,
         adaptive_tree=True,
         adaptive_tree_min_train_samples=50,
         adaptive_tree_max_train_samples=2000,
@@ -115,17 +116,10 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
         self.ccp_alpha = ccp_alpha
         self.monotonic_cst = monotonic_cst
         self.tabpfn = tabpfn
-        if self.tabpfn:
-            self.tabpfn.random_state = None  # Make sure that TabPFN is not seeded
         self.min_samples_split = min_samples_split
         self.max_features = max_features
         self.random_state = random_state
-        self.n_classes_ = 0
         self.tree_seed = tree_seed
-        self.classes_ = []
-        self.decision_tree = None
-        self.leaf_nodes = []
-        self.leaf_train_data = {}
         self.categorical_features = categorical_features
         self.verbose = verbose
         self.show_progress = show_progress
@@ -133,13 +127,10 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
         self.fit_nodes = fit_nodes
         self.adaptive_tree = adaptive_tree
         self.adaptive_tree_min_train_samples = adaptive_tree_min_train_samples
-        self.adaptive_tree_min_valid_samples_fraction_of_train = (
-            adaptive_tree_min_valid_samples_fraction_of_train
-        )
+        self.adaptive_tree_min_valid_samples_fraction_of_train = adaptive_tree_min_valid_samples_fraction_of_train
         self.adaptive_tree_max_train_samples = adaptive_tree_max_train_samples
         self.adaptive_tree_overwrite_metric = adaptive_tree_overwrite_metric
         self.adaptive_tree_test_size = adaptive_tree_test_size
-        self.label_encoder_ = LabelEncoder()
         self.average_logits = average_logits
         self.adaptive_tree_skip_class_missing = adaptive_tree_skip_class_missing
 
@@ -160,7 +151,10 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
         self.categorical_features = categorical_features
 
     def fit(self, X, y, sample_weight=None, check_input=True):
-        return self._fit(X, y, sample_weight, check_input=check_input)
+        #TODO(Leo): I don't think this is used
+        # Add return self to enable method chaining
+        self._fit(X, y, sample_weight, check_input=check_input)
+        return self
 
     def _fit(
         self,
@@ -177,7 +171,18 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
         :param check_input:
         :return: None
         """
-        self.tree_seed = random.randint(1, 10000)
+        # Initialize attributes that should only be set in fit
+        self.n_classes_ = 0
+        self.classes_ = []
+        self._decision_tree = None
+        self._leaf_nodes = []
+        self._leaf_train_data = {}
+        self.label_encoder_ = LabelEncoder()
+
+        if self.tree_seed is None:
+            self.tree_seed_ = random.randint(1, 10000)
+        else:
+            self.tree_seed_ = self.tree_seed
 
         if check_input:
             pass
@@ -252,12 +257,12 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
             self.post_fit()
 
         (
-            self.X,
-            self.y,
-            self.train_X,
-            self.train_X_preprocessed,
-            self.train_y,
-            self.train_sample_weight,
+            self._X,
+            self._y,
+            self._train_X,
+            self._train_X_preprocessed,
+            self._train_y,
+            self._train_sample_weight,
         ) = (
             X,
             y,
@@ -268,10 +273,10 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
         )
         if self.adaptive_tree:
             (
-                self.valid_X,
-                self.valid_X_preprocessed,
-                self.valid_y,
-                self.valid_sample_weight,
+                self._valid_X,
+                self._valid_X_preprocessed,
+                self._valid_y,
+                self._valid_sample_weight,
             ) = (
                 valid_X,
                 valid_X_preprocessed,
@@ -279,26 +284,26 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
                 valid_sample_weight,
             )
 
-        self.todo_post_fit = True
+        self._todo_post_fit = True
 
     def fit_leafs(self, train_X, train_y):
-        self.leaf_train_data = {}
+        self._leaf_train_data = {}
 
         # Get leaf nodes of each datapoint in bootstrap sample
-        self.leaf_nodes, bootstrap_X, bootstrap_y = self.apply_tree_train(
+        self._leaf_nodes, bootstrap_X, bootstrap_y = self.apply_tree_train(
             train_X,
             train_y,
         )
         if self.verbose:
             print(
-                f"Estimators: {self.leaf_nodes.shape[2]}, Nodes per estimator: {self.leaf_nodes.shape[1]}",
+                f"Estimators: {self._leaf_nodes.shape[2]}, Nodes per estimator: {self._leaf_nodes.shape[1]}",
             )
 
         # Store train data point for each leaf
-        for estimator_id in range(self.leaf_nodes.shape[2]):
-            self.leaf_train_data[estimator_id] = {}
-            for leaf_id in range(self.leaf_nodes.shape[1]):
-                indices = np.argwhere(self.leaf_nodes[:, leaf_id, estimator_id]).ravel()
+        for estimator_id in range(self._leaf_nodes.shape[2]):
+            self._leaf_train_data[estimator_id] = {}
+            for leaf_id in range(self._leaf_nodes.shape[1]):
+                indices = np.argwhere(self._leaf_nodes[:, leaf_id, estimator_id]).ravel()
                 X_train_samples = np.take(train_X, indices, axis=0)
                 y_train_samples = np.array(np.take(train_y, indices, axis=0)).ravel()
 
@@ -307,7 +312,7 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
                         f"Leaf: {leaf_id} Shape: {X_train_samples.shape} / {train_X.shape}",
                     )
 
-                self.leaf_train_data[estimator_id][leaf_id] = (
+                self._leaf_train_data[estimator_id][leaf_id] = (
                     X_train_samples,
                     y_train_samples,
                 )
@@ -339,8 +344,9 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
     def preprocess_data_for_tree(self, X):
         if torch.is_tensor(X):
             X = X.cpu().numpy()
-        X[np.isnan(X)] = 0.0
-        return X
+        X_copy = np.array(X, copy=True)  # Create a writeable copy
+        X_copy[np.isnan(X_copy)] = 0.0
+        return X_copy
 
     def predict_(self, X, y=None, check_input=True):
         """Predicts X
@@ -351,25 +357,26 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
         :param check_input:
         :return: Probabilities of each class
         """
+        check_is_fitted(self)
+
         # TODO: This is a bit of a hack, but it is the only way to stop the fitting at a time budget
         #    We should probably refactor this to a more elegant solution where we move more logic to fit
-
-        if self.todo_post_fit:
-            self.todo_post_fit = False
+        if self._todo_post_fit:
+            self._todo_post_fit = False
             if self.adaptive_tree:
                 if self.verbose:
                     print(
-                        f"Starting tree leaf validation train {self.train_X.shape} valid {self.valid_X.shape}",
+                        f"Starting tree leaf validation train {self._train_X.shape} valid {self._valid_X.shape}",
                     )
                 # Pre-fits the leafs of the tree
-                self.fit_leafs(self.train_X, self.train_y)
+                self.fit_leafs(self._train_X, self._train_y)
                 self.predict_(
-                    self.valid_X,
-                    self.valid_y.values.ravel(),
+                    self._valid_X,
+                    self._valid_y.values.ravel(),
                     check_input=False,
                 )
 
-            self.fit_leafs(self.X, self.y)
+            self.fit_leafs(self._X, self._y)
 
         #### END OF FITTING #####
 
@@ -424,7 +431,7 @@ class DecisionTreeTabPFNBase(BaseDecisionTree):
                 ).ravel()
 
                 # Fetch the train samples that are in the node
-                X_train_samples, y_train_samples = self.leaf_train_data[estimator_id][
+                X_train_samples, y_train_samples = self._leaf_train_data[estimator_id][
                     leaf_id
                 ]
 
@@ -726,8 +733,9 @@ class DecisionTreeTabPFNClassifier(ClassifierMixin, DecisionTreeTabPFNBase):
 
         # Make actual prediction
         if len(classes) > 1:
+            original_random_state = self.tabpfn.random_state
             try:
-                self.tabpfn.random_state = leaf_id + self.tree_seed
+                self.tabpfn.random_state = leaf_id + self.tree_seed_
                 self.tabpfn.fit(X_train_samples, y_train_samples)
                 y_eval_prob[indices[:, None], classes] = self.tabpfn.predict_proba(
                     X[indices],
@@ -746,6 +754,8 @@ class DecisionTreeTabPFNClassifier(ClassifierMixin, DecisionTreeTabPFNBase):
                     y_train_samples,
                     return_counts=True,
                 )[1] / len(y_train_samples)
+            finally:
+                self.tabpfn.random_state = original_random_state
         else:
             y_eval_prob[indices[:, None], np.array(classes)] = 1
 
@@ -877,10 +887,14 @@ class DecisionTreeTabPFNRegressor(RegressorMixin, DecisionTreeTabPFNBase):
         )
 
     def predict_leaf_(self, X_train_samples, y_train_samples, leaf_id, X, indices):
-        self.tabpfn.random_state = leaf_id + self.tree_seed
-        self.tabpfn.fit(X_train_samples, y_train_samples)
-        y_eval_prob = np.zeros((X.shape[0],))
-        y_eval_prob[indices] = self.tabpfn.predict(X[indices])
+        original_random_state = self.tabpfn.random_state
+        try:
+            self.tabpfn.random_state = leaf_id + self.tree_seed_
+            self.tabpfn.fit(X_train_samples, y_train_samples)
+            y_eval_prob = np.zeros((X.shape[0],))
+            y_eval_prob[indices] = self.tabpfn.predict(X[indices])
+        finally:
+            self.tabpfn.random_state = original_random_state
 
         return y_eval_prob
 
